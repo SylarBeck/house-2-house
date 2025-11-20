@@ -1319,10 +1319,19 @@ const App = () => {
   }, [needRefresh]);
 
 
+
   // Persist displayName
   useEffect(() => { localStorage.setItem('displayName', displayName); }, [displayName]);
   useEffect(() => { localStorage.setItem('geminiApiKey', geminiApiKey); }, [geminiApiKey]);
   useEffect(() => { localStorage.setItem('cityState', cityState); }, [cityState]);
+
+  // Update theme-color meta tag dynamically for PWA/mobile
+  useEffect(() => {
+    const metaThemeColor = document.querySelector('meta[name="theme-color"]');
+    if (metaThemeColor) {
+      metaThemeColor.setAttribute('content', LIGHT_BG);
+    }
+  }, []);
 
   // Handle email/password authentication
   const handleLogin = async (email: string, password: string, isLogin: boolean) => {
