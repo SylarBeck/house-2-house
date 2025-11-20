@@ -1554,10 +1554,7 @@ const App = () => {
         </div>
       )}
 
-      {/* User ID Display */}
-      <div className="fixed bottom-0 left-0 right-0 p-2 text-center text-xs bg-gray-100/80 backdrop-blur-sm border-t" style={{ color: MEDIUM_GRAY, borderColor: LIGHT_GRAY }}>
-        App ID: {appId} | User ID: {userId || 'Authenticating...'}
-      </div>
+
 
       {/* PWA Components */}
       <Toast />

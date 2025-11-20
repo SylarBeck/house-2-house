@@ -12,8 +12,8 @@ const PullToRefresh: React.FC<PullToRefreshProps> = ({ onRefresh, children }) =>
     const [startY, setStartY] = useState(0);
     const containerRef = useRef<HTMLDivElement>(null);
 
-    const PULL_THRESHOLD = 80;
-    const MAX_PULL = 120;
+    const PULL_THRESHOLD = 150;
+    const MAX_PULL = 180;
 
     const handleTouchStart = (e: React.TouchEvent) => {
         if (containerRef.current && containerRef.current.scrollTop === 0) {
