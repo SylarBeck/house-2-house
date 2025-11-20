@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
-  Plus, Trash2, Save, ChevronLeft, FileText, Search, Info,
-  Calendar, MapPin, User, Hash, MoreVertical, X, Share2,
-  Download, Copy, ExternalLink, Lock, Check, Link as LinkIcon,
+  Plus, Trash2, Save, ChevronLeft, FileText, Search,
+  MapPin, User, Hash, MoreVertical, X, Share2,
+  Download, Copy, Lock, Check,
   Filter, AlertTriangle, KeyRound, Sparkles, LogOut, Eye, EyeOff, Mail
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
@@ -17,6 +17,17 @@ import {
   getFirestore
 } from 'firebase/firestore';
 import { marked } from 'marked';
+
+// PWA Components and Hooks
+import { ToastProvider, useToast } from './hooks/useToast';
+import { useInstallPrompt } from './hooks/usePWA';
+import { useHaptic } from './hooks/useHaptic';
+import Toast from './components/Toast';
+import InstallPrompt from './components/InstallPrompt';
+import UpdateNotification from './components/UpdateNotification';
+import OfflineIndicator from './components/OfflineIndicator';
+import LoadingSkeleton from './components/LoadingSkeleton';
+
 
 // --- Firebase Configuration ---
 // TODO: Replace with your actual Firebase configuration
@@ -376,7 +387,7 @@ All Remarks: "${allRemarks || 'No detailed remarks were provided.'}"`;
       attempts++;
       try {
         const headers = { 'Content-Type': 'application/json' };
-        let url = GEMINI_API_URL + apiKey;
+        const url = GEMINI_API_URL + apiKey;
 
         const response = await fetch(url, {
           method: 'POST',
@@ -424,7 +435,7 @@ All Remarks: "${allRemarks || 'No detailed remarks were provided.'}"`;
       generateReport(sheetData, stats);
       setIsCopied(false);
     }
-  }, [isOpen]);
+  }, [isOpen, sheetData, stats]);
 
   if (!isOpen) return null;
 
