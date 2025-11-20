@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Plus, Trash2, Save, ChevronLeft, FileText, Search,
   MapPin, User, Hash, MoreVertical, X, Share2,
@@ -14,23 +15,55 @@ import {
   onAuthStateChanged
 } from 'firebase/auth';
 import {
-  getFirestore
+  getFirestore,
+  doc,
+  setDoc,
+  getDoc
 } from 'firebase/firestore';
 import { marked } from 'marked';
 
 // PWA Components and Hooks
-import { ToastProvider, useToast } from './hooks/useToast';
-import { useInstallPrompt } from './hooks/usePWA';
+import { useToast } from './hooks/useToast';
+import { useInstallPrompt, usePWAUpdate } from './hooks/usePWA';
 import { useHaptic } from './hooks/useHaptic';
 import Toast from './components/Toast';
 import InstallPrompt from './components/InstallPrompt';
 import UpdateNotification from './components/UpdateNotification';
 import OfflineIndicator from './components/OfflineIndicator';
+import PullToRefresh from './components/PullToRefresh';
 import LoadingSkeleton from './components/LoadingSkeleton';
 
 
+// --- Interfaces ---
+interface Row {
+  id: string;
+  houseNo: string;
+  date: string;
+  symbol: string;
+  remarks: string;
+}
+
+interface Sheet {
+  id: string;
+  street: string;
+  terrNo: string;
+  publisherName: string;
+  rows: Row[];
+  createdAt?: { seconds: number } | string;
+  updatedAt?: { seconds: number } | string;
+  ownerId?: string;
+}
+
+interface SheetStats {
+  NH: number;
+  CA: number;
+  B: number;
+  Total: number;
+  [key: string]: number;
+}
+
 // --- Firebase Configuration ---
-// TODO: Replace with your actual Firebase configuration
+
 const firebaseConfig = {
   apiKey: "AIzaSyCZMOMaOOQLUyC8azK-SvTNXY9W9I0TWD0",
   authDomain: "house-2-house-42e42.firebaseapp.com",
@@ -42,7 +75,7 @@ const firebaseConfig = {
 };
 
 // --- Auth Modal ---
-const AuthModal = ({ isOpen, onClose, onLogin }) => {
+const AuthModal = ({ isOpen, onClose, onLogin }: { isOpen: boolean; onClose: () => void; onLogin: (e: string, p: string, l: boolean) => Promise<any> }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -51,7 +84,7 @@ const AuthModal = ({ isOpen, onClose, onLogin }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
@@ -65,8 +98,9 @@ const AuthModal = ({ isOpen, onClose, onLogin }) => {
     try {
       await onLogin(email, password, isLogin);
       onClose();
-    } catch (err) {
-      setError(err.message || 'Authentication failed');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Authentication failed';
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -169,11 +203,11 @@ const AuthModal = ({ isOpen, onClose, onLogin }) => {
 };
 
 // --- Profile Modal ---
-const ProfileModal = ({ isOpen, onClose, userId, userEmail, onLogout, displayName, setDisplayName, geminiApiKey, setGeminiApiKey }) => {
+const ProfileModal = ({ isOpen, onClose, userId, userEmail, onLogout, displayName, setDisplayName, geminiApiKey, setGeminiApiKey, cityState, setCityState }: { isOpen: boolean; onClose: () => void; userId: string | null; userEmail: string | null; onLogout: () => void; displayName: string; setDisplayName: (s: string) => void; geminiApiKey: string; setGeminiApiKey: (s: string) => void; cityState: string; setCityState: (s: string) => void }) => {
   const [showApiKey, setShowApiKey] = useState(false);
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
         <div className="p-4 border-b flex justify-between items-center bg-gray-50">
@@ -183,7 +217,7 @@ const ProfileModal = ({ isOpen, onClose, userId, userEmail, onLogout, displayNam
           </button>
         </div>
 
-        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-4">
           {/* User Info */}
           <div className="flex flex-col items-center text-center">
             <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-3 text-gray-400">
@@ -191,7 +225,7 @@ const ProfileModal = ({ isOpen, onClose, userId, userEmail, onLogout, displayNam
             </div>
 
             {/* Name Input */}
-            <div className="w-full mb-2">
+            <div className="w-full">
               <label className="block text-xs font-bold text-gray-500 uppercase mb-1 text-left">Your Name</label>
               <input
                 type="text"
@@ -204,13 +238,26 @@ const ProfileModal = ({ isOpen, onClose, userId, userEmail, onLogout, displayNam
               <p className="text-[10px] text-green-600 mt-1 h-4">{displayName ? '✓ Saved' : ''}</p>
             </div>
 
-            <p className="text-sm text-gray-500 font-mono bg-gray-100 px-2 py-1 rounded text-xs break-all">
+            <p className="text-sm text-gray-500 font-mono bg-gray-100 px-2 py-1 rounded text-xs break-all w-full">
               ID: {userId}
             </p>
           </div>
 
+          {/* City/State Input */}
+          <div className="w-full">
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Default City/State</label>
+            <input
+              type="text"
+              value={cityState}
+              onChange={(e) => setCityState(e.target.value)}
+              placeholder="e.g. New York, NY"
+              className="w-full p-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+            />
+            <p className="text-[10px] text-gray-400 mt-1">Used for accurate map previews</p>
+          </div>
+
           {/* Email Display */}
-          <div className="bg-gray-50 p-3 rounded-lg border border-gray-200 text-sm mb-3">
+          <div className="bg-gray-50 p-3 rounded-lg border border-gray-200 text-sm w-full">
             <p className="font-bold text-gray-700 mb-1 flex items-center gap-2">
               <Mail size={14} /> Email
             </p>
@@ -218,7 +265,7 @@ const ProfileModal = ({ isOpen, onClose, userId, userEmail, onLogout, displayNam
           </div>
 
           {/* API Key Configuration */}
-          <div className="bg-yellow-50 p-3 rounded-lg border border-yellow-200 text-sm mb-3">
+          <div className="bg-yellow-50 p-3 rounded-lg border border-yellow-200 text-sm w-full">
             <p className="font-bold text-yellow-800 mb-2 flex items-center gap-2">
               <KeyRound size={14} /> Gemini API Key
             </p>
@@ -244,14 +291,14 @@ const ProfileModal = ({ isOpen, onClose, userId, userEmail, onLogout, displayNam
           </div>
 
           {/* Storage Status */}
-          <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 text-sm">
+          <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 text-sm w-full">
             <p className="font-bold text-blue-800 mb-1">Storage Status:</p>
             <p className="text-blue-700">💾 Local Storage Only (Device)</p>
             <p className="text-xs text-blue-600 mt-1">Data is saved on this device.</p>
           </div>
 
           {/* Actions */}
-          <div className="pt-4">
+          <div className="pt-2 w-full">
             <button
               onClick={onLogout}
               className="w-full py-2 text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors text-sm font-medium flex items-center justify-center gap-2"
@@ -261,7 +308,8 @@ const ProfileModal = ({ isOpen, onClose, userId, userEmail, onLogout, displayNam
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 
@@ -272,7 +320,7 @@ const appId = 'house-2-house-pwa'; // Keep appId for consistency, though not use
 
 // --- Gemini API Configuration ---
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=`;
-const apiKey = ""; // TODO: Add your Gemini API key here
+
 
 // --- Theme Colors ---
 const PRIMARY_RED = '#d14336';
@@ -298,7 +346,7 @@ const generateId = () => {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 };
 
-const generateCSV = (data) => {
+const generateCSV = (data: Sheet) => {
   const headers = ['Street', 'Territory No', 'Publisher', 'House No', 'Date', 'Symbol', 'Remarks'];
   const rows = (data.rows || []).map(row => [
     `"${data.street || ''}"`,
@@ -320,7 +368,7 @@ const generateCSV = (data) => {
   document.body.removeChild(link);
 };
 
-const copyRichText = (data) => {
+const copyRichText = (data: Sheet) => {
   let text = `HOUSE-TO-HOUSE RECORD\n`;
   text += `Street: ${data.street || 'N/A'} | Terr: ${data.terrNo || 'N/A'} | Pub: ${data.publisherName || 'N/A'}\n`;
   text += `----------------------------------------\n`;
@@ -331,25 +379,27 @@ const copyRichText = (data) => {
   navigator.clipboard.writeText(text);
 };
 
-const getSheetStats = (rows = []) => {
-  const stats = { NH: 0, CA: 0, B: 0, Total: rows.length };
+const getSheetStats = (rows: Row[] = []): SheetStats => {
+  const stats: SheetStats = { NH: 0, CA: 0, B: 0, Total: rows.length };
   rows.forEach(r => {
     if (['NH', 'CA', 'B'].includes(r.symbol)) {
-      stats[r.symbol] = (stats[r.symbol] || 0) + 1;
+      stats[r.symbol]++;
     }
   });
   return stats;
 };
 
+
+
 // --- LLM Feature: Report Generator ---
-const ReportGeneratorModal = ({ isOpen, onClose, sheetData, stats }) => {
-  const [report, setReport] = useState(null);
+const ReportGeneratorModal = ({ isOpen, onClose, sheetData, stats, apiKey }: { isOpen: boolean; onClose: () => void; sheetData: Sheet; stats: SheetStats; apiKey: string }) => {
+  const [report, setReport] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
   const [isCopied, setIsCopied] = useState(false);
 
   // Function to call the Gemini API
-  const generateReport = async (data, stats) => {
+  const generateReport = async (data: Sheet, stats: SheetStats) => {
     setIsLoading(true);
     setError(null);
     setReport(null);
@@ -359,19 +409,19 @@ const ReportGeneratorModal = ({ isOpen, onClose, sheetData, stats }) => {
 
     const systemPrompt = `You are a professional territory analyst and report writer. Your task is to analyze house-to-house records and generate a concise, encouraging report based ONLY on the data provided below. The report must be formatted in clean Markdown.
 
-The report MUST include:
-1. A bold summary of the territory's identity (Street and Territory Number).
-2. Key statistics (Total entries, Not Home (NH) count, Call Again (CA) count).
-3. A thematic summary of the remarks (identify 2-3 common themes, interests, or demographics noted in the remarks).
-4. A suggested next step or encouraging closing statement for the publisher.`;
+      The report MUST include:
+      1. A bold summary of the territory's identity (Street and Territory Number).
+      2. Key statistics (Total entries, Not Home (NH) count, Call Again (CA) count).
+      3. A thematic summary of the remarks (identify 2-3 common themes, interests, or demographics noted in the remarks).
+      4. A suggested next step or encouraging closing statement for the publisher.`;
 
     const userQuery = `Analyze the following territory record data:
-Street: ${data.street || 'N/A'}
-Territory No: ${data.terrNo || 'N/A'}
-Total Entries: ${stats.Total}
-Not Home (NH) Count: ${stats.NH}
-Call Again (CA) Count: ${stats.CA}
-All Remarks: "${allRemarks || 'No detailed remarks were provided.'}"`;
+      Street: ${data.street || 'N/A'}
+      Territory No: ${data.terrNo || 'N/A'}
+      Total Entries: ${stats.Total}
+      Not Home (NH) Count: ${stats.NH}
+      Call Again (CA) Count: ${stats.CA}
+      All Remarks: "${allRemarks || 'No detailed remarks were provided.'}"`;
 
     const payload = {
       contents: [{ parts: [{ text: userQuery }] }],
@@ -412,7 +462,7 @@ All Remarks: "${allRemarks || 'No detailed remarks were provided.'}"`;
         } else {
           throw new Error("API response was empty or malformed.");
         }
-      } catch (err) {
+      } catch (err: unknown) {
         if (attempts === maxAttempts) {
           console.error("Gemini API error:", err);
           setError("Failed to generate report after several attempts. Please try again.");
@@ -435,7 +485,7 @@ All Remarks: "${allRemarks || 'No detailed remarks were provided.'}"`;
       generateReport(sheetData, stats);
       setIsCopied(false);
     }
-  }, [isOpen, sheetData, stats]);
+  }, [isOpen, sheetData, stats, apiKey]); // Added apiKey to dependencies
 
   if (!isOpen) return null;
 
@@ -504,9 +554,9 @@ const Spinner = () => (
   </div>
 );
 
-const ConfirmModal = ({ isOpen, onClose, onConfirm, title, message, isDangerous }) => {
+const ConfirmModal = ({ isOpen, onClose, onConfirm, title, message, isDangerous }: { isOpen: boolean; onClose: () => void; onConfirm: () => void; title: string; message: string; isDangerous?: boolean }) => {
   if (!isOpen) return null;
-  return (
+  return createPortal(
     <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
       <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 transform transition-all scale-100">
         <div className="flex items-center gap-3 mb-4">
@@ -521,7 +571,7 @@ const ConfirmModal = ({ isOpen, onClose, onConfirm, title, message, isDangerous 
           <button
             onClick={() => { onConfirm(); onClose(); }}
             className={`px-4 py-2 text-white font-medium rounded-lg shadow-md ${isDangerous ? 'bg-red-600 hover:bg-red-700' : ''}`}
-            style={!isDangerous ? { backgroundColor: PRIMARY_RED, '--hover-bg-color': '#c03a2f' } : {}}
+            style={!isDangerous ? { backgroundColor: PRIMARY_RED, '--hover-bg-color': '#c03a2f' } as React.CSSProperties : {}}
             onMouseOver={e => !isDangerous && (e.currentTarget.style.backgroundColor = e.currentTarget.style.getPropertyValue('--hover-bg-color'))}
             onMouseOut={e => !isDangerous && (e.currentTarget.style.backgroundColor = PRIMARY_RED)}
           >
@@ -529,18 +579,52 @@ const ConfirmModal = ({ isOpen, onClose, onConfirm, title, message, isDangerous 
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 
-const ShareModal = ({ isOpen, onClose, shareUrl, shareId }) => {
+const ShareModal = ({ isOpen, onClose, shareUrl, shareId, showToast, vibrate }: { isOpen: boolean; onClose: () => void; shareUrl: string; shareId: string; showToast?: (message: string, type: 'success' | 'error' | 'info') => void; vibrate?: (type: 'light' | 'medium' | 'heavy') => void }) => {
   const [copied, setCopied] = useState(false);
+
   if (!isOpen) return null;
 
-  const handleCopy = (text) => {
+  const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+    if (vibrate) vibrate('light');
+    if (showToast) showToast('Copied to clipboard!', 'success');
+  };
+
+  // Native share functionality for iOS and Android
+  const handleNativeShare = async () => {
+    // Check if Web Share API is supported
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'House-to-House Record',
+          text: `View this territory record. Share code: ${shareId}`,
+          url: shareUrl,
+        });
+        if (vibrate) vibrate('medium');
+        if (showToast) showToast('Shared successfully!', 'success');
+      } catch (err: unknown) {
+        // User cancelled or share failed
+        const error = err as Error; // Cast for checking name, or use safe check
+        if (error?.name !== 'AbortError') {
+          console.error('Share failed:', err);
+          const msg = error?.message || 'Unknown error';
+          if (showToast) showToast('Share failed: ' + msg, 'error');
+          // Fallback to copy
+          handleCopy(shareUrl);
+        }
+      }
+    } else {
+      // Fallback to copy if Web Share API not supported
+      handleCopy(shareUrl);
+      if (showToast) showToast('Link copied! (Share not supported on this device)', 'info');
+    }
   };
 
   return (
@@ -555,6 +639,25 @@ const ShareModal = ({ isOpen, onClose, shareUrl, shareId }) => {
 
         <div className="bg-red-50 p-3 rounded-lg text-sm text-red-800 mb-4" style={{ borderColor: PRIMARY_RED }}>
           Anyone with this code or link can view a "Read-Only" snapshot of this record.
+        </div>
+
+        {/* Native Share Button */}
+        <button
+          onClick={handleNativeShare}
+          className="w-full mb-4 p-3 rounded-lg font-medium text-white flex items-center justify-center gap-2 hover:bg-red-700 transition-colors"
+          style={{ backgroundColor: PRIMARY_RED }}
+        >
+          <Share2 size={18} />
+          Share Link
+        </button>
+
+        <div className="relative mb-4">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-gray-200"></div>
+          </div>
+          <div className="relative flex justify-center text-xs uppercase">
+            <span className="bg-white px-2 text-gray-500">Or copy manually</span>
+          </div>
         </div>
 
         <label className="text-xs font-bold uppercase mb-1 block" style={{ color: MEDIUM_GRAY }}>Share Link</label>
@@ -578,14 +681,15 @@ const ShareModal = ({ isOpen, onClose, shareUrl, shareId }) => {
         </div>
       </div>
     </div>
+
   );
 };
 
-const EnterCodeModal = ({ isOpen, onClose, onSubmit }) => {
+const EnterCodeModal = ({ isOpen, onClose, onSubmit }: { isOpen: boolean; onClose: () => void; onSubmit: (code: string) => void }) => {
   const [input, setInput] = useState('');
   if (!isOpen) return null;
 
-  const handleSubmit = (e) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     // Extract ID if full URL is pasted
     let idToUse = input.trim();
@@ -610,7 +714,7 @@ const EnterCodeModal = ({ isOpen, onClose, onSubmit }) => {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             className="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:ring-2 focus:outline-none font-mono text-center"
-            style={{ '--tw-ring-color': PRIMARY_RED }}
+            style={{ '--tw-focus-ring-color': PRIMARY_RED } as React.CSSProperties}
             placeholder="e.g. 3vfihh..."
           />
           <button type="submit" className="w-full py-2 text-white rounded-lg hover:bg-red-700 font-medium" style={{ backgroundColor: PRIMARY_RED }}>Open Record</button>
@@ -620,9 +724,9 @@ const EnterCodeModal = ({ isOpen, onClose, onSubmit }) => {
   );
 };
 
-const SheetList = ({ sheets, onSelect, onCreate, onDelete, onOpenShared, userId, userEmail, onLogout, displayName, setDisplayName, geminiApiKey, setGeminiApiKey }) => {
+const SheetList = ({ sheets, onSelect, onCreate, onDelete, onOpenShared, userId, userEmail, onLogout, displayName, setDisplayName, geminiApiKey, setGeminiApiKey, cityState, setCityState, isLoading }: { sheets: Sheet[]; onSelect: (s: Sheet) => void; onCreate: () => void; onDelete: (id: string) => void; onOpenShared: () => void; userId: string | null; userEmail: string | null; onLogout: () => void; displayName: string; setDisplayName: (s: string) => void; geminiApiKey: string; setGeminiApiKey: (s: string) => void; cityState: string; setCityState: (s: string) => void; isLoading: boolean }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [deleteId, setDeleteId] = useState(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [showProfile, setShowProfile] = useState(false);
 
   const filteredSheets = sheets.filter(sheet =>
@@ -635,7 +739,7 @@ const SheetList = ({ sheets, onSelect, onCreate, onDelete, onOpenShared, userId,
       <ConfirmModal
         isOpen={!!deleteId}
         onClose={() => setDeleteId(null)}
-        onConfirm={() => onDelete(deleteId)}
+        onConfirm={() => { if (deleteId) onDelete(deleteId); setDeleteId(null); }}
         title="Delete Record Sheet?"
         message="This action cannot be undone. Are you sure you want to permanently delete this territory record?"
         isDangerous={true}
@@ -651,6 +755,8 @@ const SheetList = ({ sheets, onSelect, onCreate, onDelete, onOpenShared, userId,
         setDisplayName={setDisplayName}
         geminiApiKey={geminiApiKey}
         setGeminiApiKey={setGeminiApiKey}
+        cityState={cityState}
+        setCityState={setCityState}
       />
 
       {/* Top Header */}
@@ -698,7 +804,7 @@ const SheetList = ({ sheets, onSelect, onCreate, onDelete, onOpenShared, userId,
           type="text"
           placeholder="Search by Street or Territory No..."
           className="pl-10 w-full p-3 border border-gray-200 rounded-lg shadow-sm focus:ring-2 focus:outline-none transition-shadow"
-          style={{ '--tw-ring-color': PRIMARY_RED, color: DARK_TEXT }}
+          style={{ '--tw-ring-color': PRIMARY_RED, color: DARK_TEXT } as React.CSSProperties}
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
         />
@@ -706,7 +812,11 @@ const SheetList = ({ sheets, onSelect, onCreate, onDelete, onOpenShared, userId,
 
       {/* List */}
       {
-        sheets.length === 0 ? (
+        isLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <LoadingSkeleton type="card" count={6} />
+          </div>
+        ) : sheets.length === 0 ? (
           <div className="text-center py-12 bg-gray-50 rounded-xl border-2 border-dashed border-gray-200">
             <FileText size={48} className="mx-auto text-gray-300 mb-4" />
             <h3 className="text-lg font-medium" style={{ color: DARK_TEXT }}>No records found</h3>
@@ -719,43 +829,71 @@ const SheetList = ({ sheets, onSelect, onCreate, onDelete, onOpenShared, userId,
               return (
                 <div
                   key={sheet.id}
-                  className="group bg-white p-5 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-all cursor-pointer relative hover:border-blue-300" // Blue hover for general interactivity
+                  className="group bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-all cursor-pointer relative hover:border-blue-300 overflow-hidden" // Blue hover for general interactivity
                   onClick={() => onSelect(sheet)}
                 >
-                  <div className="flex justify-between items-start mb-3">
-                    <div className="p-2 rounded-lg" style={{ backgroundColor: LIGHT_BG }}>
-                      <MapPin size={20} style={{ color: PRIMARY_RED }} />
+                  {/* Map Preview */}
+                  <div className="h-32 w-full bg-gray-100 relative overflow-hidden">
+                    {sheet.street ? (
+                      <iframe
+                        title={`Map of ${sheet.street}`}
+                        width="100%"
+                        height="100%"
+                        frameBorder="0"
+                        scrolling="no"
+                        marginHeight={0}
+                        marginWidth={0}
+                        src={`https://maps.google.com/maps?q=${encodeURIComponent(sheet.street + ' ' + (sheet.terrNo || '') + ' ' + cityState)}&t=&z=15&ie=UTF8&iwloc=&output=embed`}
+                        className="opacity-80 group-hover:opacity-100 transition-opacity pointer-events-none absolute top-[-25%] left-[-25%] w-[150%] h-[150%] border-none"
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-gray-300">
+                        <MapPin size={32} />
+                      </div>
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-b from-transparent to-white/10 pointer-events-none" />
+                  </div>
+
+                  <div className="p-5 pt-3">
+                    <div className="flex justify-between items-start mb-3">
+                      <div className="p-2 rounded-lg" style={{ backgroundColor: LIGHT_BG }}>
+                        <MapPin size={20} style={{ color: PRIMARY_RED }} />
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDeleteId(sheet.id); }}
+                        className="text-gray-300 hover:text-red-500 p-2 rounded-full hover:bg-red-50 transition-colors md:opacity-0 md:group-hover:opacity-100"
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </div>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setDeleteId(sheet.id); }}
-                      className="text-gray-300 hover:text-red-500 p-2 rounded-full hover:bg-red-50 transition-colors md:opacity-0 md:group-hover:opacity-100"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
 
-                  <h3 className="font-bold text-lg mb-1 truncate" style={{ color: DARK_TEXT }}>
-                    {sheet.street || 'Untitled Street'}
-                  </h3>
+                    <h3 className="font-bold text-lg mb-1 truncate" style={{ color: DARK_TEXT }}>
+                      {sheet.street || 'Untitled Street'}
+                    </h3>
 
-                  <div className="flex items-center gap-3 text-sm mb-4" style={{ color: MEDIUM_GRAY }}>
-                    <span className="flex items-center gap-1">
-                      <Hash size={14} /> {sheet.terrNo || '--'}
-                    </span>
-                    <span className="flex items-center gap-1 truncate max-w-[50%]">
-                      <User size={14} /> {sheet.publisherName || 'No Name'}
-                    </span>
-                  </div>
+                    <div className="flex items-center gap-3 text-sm mb-4" style={{ color: MEDIUM_GRAY }}>
+                      <span className="flex items-center gap-1">
+                        <Hash size={14} /> {sheet.terrNo || '--'}
+                      </span>
+                      <span className="flex items-center gap-1 truncate max-w-[50%]">
+                        <User size={14} /> {sheet.publisherName || 'No Name'}
+                      </span>
+                    </div>
 
-                  {/* Mini Stats */}
-                  <div className="flex gap-2 mb-3">
-                    {stats.NH > 0 && <span className="text-xs px-2 py-0.5 rounded border font-medium" style={{ backgroundColor: LIGHT_BG, color: DARK_TEXT, borderColor: LIGHT_GRAY }}>{stats.NH} NH</span>}
-                    {stats.CA > 0 && <span className="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 rounded border border-blue-100 font-medium">{stats.CA} CA</span>}
-                  </div>
+                    {/* Mini Stats */}
+                    <div className="flex gap-2 mb-3">
+                      {stats.NH > 0 && <span className="text-xs px-2 py-0.5 rounded border font-medium" style={{ backgroundColor: LIGHT_BG, color: DARK_TEXT, borderColor: LIGHT_GRAY }}>{stats.NH} NH</span>}
+                      {stats.CA > 0 && <span className="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 rounded border border-blue-100 font-medium">{stats.CA} CA</span>}
+                    </div>
 
-                  <div className="text-xs text-gray-400 border-t pt-3 flex justify-between items-center" style={{ borderColor: LIGHT_GRAY }}>
-                    <span>{stats.Total} entries</span>
-                    <span>{sheet.updatedAt?.toDate ? sheet.updatedAt.toDate().toLocaleDateString() : 'Just now'}</span>
+                    <div className="text-xs text-gray-400 border-t pt-3 flex justify-between items-center" style={{ borderColor: LIGHT_GRAY }}>
+                      <span>{stats.Total} entries</span>
+                      <span>{
+                        sheet.updatedAt && typeof sheet.updatedAt === 'object' && 'seconds' in sheet.updatedAt
+                          ? new Date(sheet.updatedAt.seconds * 1000).toLocaleDateString()
+                          : 'Just now'
+                      }</span>
+                    </div>
                   </div>
                 </div>
               );
@@ -768,7 +906,7 @@ const SheetList = ({ sheets, onSelect, onCreate, onDelete, onOpenShared, userId,
 };
 
 // --- New Component: SymbolSelector (Radio Buttons) ---
-const SymbolSelector = ({ value, onChange, disabled }) => {
+const SymbolSelector = ({ value, onChange, disabled }: { value: string; onChange: (val: string) => void; disabled?: boolean }) => {
   return (
     <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
       {SYMBOLS.map((sym) => (
@@ -791,44 +929,44 @@ const SymbolSelector = ({ value, onChange, disabled }) => {
   );
 };
 
-const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false }) => {
+const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly }: { sheetData: Sheet; onBack: () => void; onUpdate: (id: string, data: Sheet) => void; onShare: (data: Sheet) => void; isReadOnly: boolean }) => {
   const [localData, setLocalData] = useState(sheetData);
   const [isSaving, setIsSaving] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false); // State for the new modal
-  const [filterMode, setFilterMode] = useState('ALL'); // ALL, CA, NH
-  const [rowToDelete, setRowToDelete] = useState(null);
+  const [filterMode, setFilterMode] = useState<'ALL' | 'CA' | 'NH'>('ALL'); // ALL, CA, NH
+  const [rowToDelete, setRowToDelete] = useState<string | null>(null);
 
-  const menuRef = useRef(null);
-  const timeoutRef = useRef(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { setLocalData(sheetData); }, [sheetData]);
 
   useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (menuRef.current && !menuRef.current.contains(event.target)) setShowMenu(false);
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setShowMenu(false);
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const debouncedSave = (newData) => {
+  const debouncedSave = (newData: Sheet) => {
     setIsSaving(true);
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
       onUpdate(newData.id, newData);
       setIsSaving(false);
-    }, 800);
+    }, 800) as any;
   };
 
-  const handleHeaderChange = (field, value) => {
+  const handleHeaderChange = (field: string, value: string) => {
     if (isReadOnly) return;
     const newData = { ...localData, [field]: value };
     setLocalData(newData);
     debouncedSave(newData);
   };
 
-  const handleRowChange = (id, field, value) => {
+  const handleRowChange = (id: string, field: keyof Row, value: string) => {
     if (isReadOnly) return;
     const newRows = localData.rows.map(row => row.id === id ? { ...row, [field]: value } : row);
     const newData = { ...localData, rows: newRows };
@@ -838,7 +976,7 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
 
   const addRow = () => {
     if (isReadOnly) return;
-    const newRow = {
+    const newRow: Row = {
       id: generateId(),
       houseNo: '',
       date: new Date().toISOString().split('T')[0],
@@ -850,7 +988,7 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
     onUpdate(newData.id, newData); // Immediate save for adding
   };
 
-  const confirmDeleteRow = (id) => {
+  const confirmDeleteRow = (id: string) => {
     const newData = { ...localData, rows: localData.rows.filter(r => r.id !== id) };
     setLocalData(newData);
     onUpdate(newData.id, newData);
@@ -869,7 +1007,7 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
       <ConfirmModal
         isOpen={!!rowToDelete}
         onClose={() => setRowToDelete(null)}
-        onConfirm={() => confirmDeleteRow(rowToDelete)}
+        onConfirm={() => { if (rowToDelete) confirmDeleteRow(rowToDelete); setRowToDelete(null); }}
         title="Delete Entry?"
         message="Are you sure you want to remove this house from the record?"
         isDangerous={true}
@@ -879,6 +1017,7 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
         onClose={() => setShowReportModal(false)}
         sheetData={localData}
         stats={stats}
+        apiKey={localStorage.getItem('geminiApiKey') || ''}
       />
 
       {/* Nav */}
@@ -964,15 +1103,15 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
           <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
             <div className="md:col-span-8">
               <label className="block text-xs font-bold uppercase tracking-wider mb-1" style={{ color: MEDIUM_GRAY }}>Street Name</label>
-              <input type="text" disabled={isReadOnly} value={localData.street || ''} onChange={(e) => handleHeaderChange('street', e.target.value)} className="w-full border-b-2 border-gray-300 bg-transparent px-2 py-1 text-lg font-medium focus:outline-none disabled:border-transparent disabled:text-gray-600" style={{ color: DARK_TEXT, '--tw-focus-ring-color': PRIMARY_RED }} placeholder="e.g., Maple Avenue" />
+              <input type="text" disabled={isReadOnly} value={localData.street || ''} onChange={(e) => handleHeaderChange('street', e.target.value)} className="w-full border-b-2 border-gray-300 bg-transparent px-2 py-1 text-lg font-medium focus:outline-none disabled:border-transparent disabled:text-gray-600" style={{ color: DARK_TEXT, '--tw-focus-ring-color': PRIMARY_RED } as React.CSSProperties} placeholder="e.g., Maple Avenue" />
             </div>
             <div className="md:col-span-4">
               <label className="block text-xs font-bold uppercase tracking-wider mb-1" style={{ color: MEDIUM_GRAY }}>Terr. No.</label>
-              <input type="text" disabled={isReadOnly} value={localData.terrNo || ''} onChange={(e) => handleHeaderChange('terrNo', e.target.value)} className="w-full border-b-2 border-gray-300 bg-transparent px-2 py-1 text-lg font-medium focus:outline-none disabled:border-transparent disabled:text-gray-600" style={{ color: DARK_TEXT, '--tw-focus-ring-color': PRIMARY_RED }} placeholder="e.g., 14-B" />
+              <input type="text" disabled={isReadOnly} value={localData.terrNo || ''} onChange={(e) => handleHeaderChange('terrNo', e.target.value)} className="w-full border-b-2 border-gray-300 bg-transparent px-2 py-1 text-lg font-medium focus:outline-none disabled:border-transparent disabled:text-gray-600" style={{ color: DARK_TEXT, '--tw-focus-ring-color': PRIMARY_RED } as React.CSSProperties} placeholder="e.g., 14-B" />
             </div>
             <div className="md:col-span-12">
               <label className="block text-xs font-bold uppercase tracking-wider mb-1" style={{ color: MEDIUM_GRAY }}>Publisher</label>
-              <input type="text" disabled={isReadOnly} value={localData.publisherName || ''} onChange={(e) => handleHeaderChange('publisherName', e.target.value)} className="w-full border-b-2 border-gray-300 bg-transparent px-2 py-1 text-lg font-medium focus:outline-none disabled:border-transparent disabled:text-gray-600" style={{ color: DARK_TEXT, '--tw-focus-ring-color': PRIMARY_RED }} placeholder="Your Name" />
+              <input type="text" disabled={isReadOnly} value={localData.publisherName || ''} onChange={(e) => handleHeaderChange('publisherName', e.target.value)} className="w-full border-b-2 border-gray-300 bg-transparent px-2 py-1 text-lg font-medium focus:outline-none disabled:border-transparent disabled:text-gray-600" style={{ color: DARK_TEXT, '--tw-focus-ring-color': PRIMARY_RED } as React.CSSProperties} placeholder="Your Name" />
             </div>
           </div>
         </div>
@@ -984,7 +1123,7 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
           {['ALL', 'NH', 'CA'].map(mode => (
             <button
               key={mode}
-              onClick={() => setFilterMode(mode)}
+              onClick={() => setFilterMode(mode as 'ALL' | 'CA' | 'NH')}
               className={`text-xs font-bold px-3 py-1 rounded-full border transition-colors whitespace-nowrap ${filterMode === mode
                 ? 'text-white border-gray-800'
                 : 'bg-white border-gray-200 hover:bg-gray-50'
@@ -1017,12 +1156,44 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
             return (
               <div
                 key={row.id}
-                className="p-3 grid grid-cols-12 gap-4 md:gap-4 items-center transition-colors"
-                style={{ backgroundColor: symbolObj.code ? 'rgba(209, 67, 54, 0.05)' : '#ffffff' }}
+                className="p-4 border-b last:border-b-0 md:grid md:grid-cols-12 md:gap-4 md:items-center transition-colors hover:bg-gray-50 flex flex-col gap-3 relative"
+                style={{ backgroundColor: symbolObj.code ? 'rgba(209, 67, 54, 0.03)' : '#ffffff' }}
               >
-                {/* House No. */}
-                <div className="col-span-4 md:col-span-2">
-                  <label className="md:hidden text-xs font-bold uppercase block mb-1" style={{ color: MEDIUM_GRAY }}>House No.</label>
+                {/* Mobile: Top Row (House No + Date + Delete) */}
+                <div className="flex md:hidden justify-between items-start w-full">
+                  <div className="flex flex-col">
+                    <label className="text-[10px] font-bold uppercase text-gray-400 tracking-wider">House No.</label>
+                    <input
+                      type="text"
+                      disabled={isReadOnly}
+                      value={row.houseNo || ''}
+                      onChange={(e) => handleRowChange(row.id, 'houseNo', e.target.value)}
+                      className="text-xl font-bold text-gray-800 bg-transparent border-b border-transparent focus:border-red-500 focus:outline-none placeholder-gray-300 w-32"
+                      placeholder="#"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="date"
+                      disabled={isReadOnly}
+                      value={row.date || new Date().toISOString().split('T')[0]}
+                      onChange={(e) => handleRowChange(row.id, 'date', e.target.value)}
+                      className="text-xs text-gray-500 bg-transparent border-none focus:ring-0 text-right font-medium"
+                    />
+                    {!isReadOnly && (
+                      <button
+                        onClick={() => setRowToDelete(row.id)}
+                        className="p-2 -mr-2 text-gray-300 hover:text-red-500 transition-colors"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Desktop: House No */}
+                <div className="hidden md:block col-span-2">
                   <input
                     type="text"
                     disabled={isReadOnly}
@@ -1034,9 +1205,8 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
                   />
                 </div>
 
-                {/* Date */}
-                <div className="col-span-4 md:col-span-2">
-                  <label className="md:hidden text-xs font-bold uppercase block mb-1" style={{ color: MEDIUM_GRAY }}>Date</label>
+                {/* Desktop: Date */}
+                <div className="hidden md:block col-span-2">
                   <input
                     type="date"
                     disabled={isReadOnly}
@@ -1047,9 +1217,9 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
                   />
                 </div>
 
-                {/* Symbol Dropdown */}
-                <div className="col-span-4 md:col-span-2">
-                  <label className="md:hidden text-xs font-bold uppercase block mb-1" style={{ color: MEDIUM_GRAY }}>Symbol</label>
+                {/* Symbol Selector (Mobile & Desktop) */}
+                <div className="w-full md:col-span-2">
+                  <label className="md:hidden text-[10px] font-bold uppercase text-gray-400 tracking-wider mb-1 block">Status</label>
                   <SymbolSelector
                     value={row.symbol}
                     onChange={(val) => handleRowChange(row.id, 'symbol', val)}
@@ -1057,23 +1227,23 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
                   />
                 </div>
 
-                {/* Remarks/Name */}
-                <div className="col-span-11 md:col-span-5 pt-3 md:pt-0">
-                  <label className="md:hidden text-xs font-bold uppercase block mb-1" style={{ color: MEDIUM_GRAY }}>Remarks</label>
+                {/* Remarks (Mobile & Desktop) */}
+                <div className="w-full md:col-span-5">
+                  <label className="md:hidden text-[10px] font-bold uppercase text-gray-400 tracking-wider mb-1 block">Remarks</label>
                   <input
                     type="text"
                     disabled={isReadOnly}
                     value={row.remarks || ''}
                     onChange={(e) => handleRowChange(row.id, 'remarks', e.target.value)}
-                    className="w-full text-sm border-b border-gray-300 px-1 focus:outline-none disabled:border-transparent bg-transparent"
+                    className="w-full text-sm border-b border-gray-200 md:border-gray-300 px-1 py-1 focus:outline-none disabled:border-transparent bg-transparent focus:border-red-500 transition-colors"
                     style={{ color: DARK_TEXT }}
-                    placeholder="Notes (Name, literature, etc.)"
+                    placeholder="Add notes..."
                   />
                 </div>
 
-                {/* Delete Button (Mobile & Desktop) */}
+                {/* Desktop: Delete Button */}
                 {!isReadOnly && (
-                  <div className="col-span-1 text-right md:text-center">
+                  <div className="hidden md:block col-span-1 text-center">
                     <button
                       onClick={() => setRowToDelete(row.id)}
                       className="p-1.5 rounded-full text-gray-400 hover:text-red-600 hover:bg-red-100 transition-colors"
@@ -1110,30 +1280,52 @@ const SheetEditor = ({ sheetData, onBack, onUpdate, onShare, isReadOnly = false 
 // --- Main App Component ---
 const App = () => {
   const [authReady, setAuthReady] = useState(false);
-  const [userId, setUserId] = useState(null);
-  const [sheets, setSheets] = useState([]);
-  const [selectedSheet, setSelectedSheet] = useState(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [sheets, setSheets] = useState<Sheet[]>([]);
+  const [isLoadingData, setIsLoadingData] = useState(true);
+  const [selectedSheet, setSelectedSheet] = useState<Sheet | null>(null);
   const [showShareModal, setShowShareModal] = useState(false);
-  const [shareData, setShareData] = useState({});
+  const [shareData, setShareData] = useState<{ shareUrl?: string; shareId?: string }>({});
   const [showEnterCodeModal, setShowEnterCodeModal] = useState(false);
   const [isReadOnly, setIsReadOnly] = useState(false); // To handle shared view
   const [displayName, setDisplayName] = useState(() => localStorage.getItem('displayName') || '');
   const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem('geminiApiKey') || '');
-  const [userEmail, setUserEmail] = useState('');
+  const [cityState, setCityState] = useState(() => localStorage.getItem('cityState') || '');
+
   const [showAuthModal, setShowAuthModal] = useState(false);
 
-  // Persist displayName
-  useEffect(() => {
-    localStorage.setItem('displayName', displayName);
-  }, [displayName]);
+  // PWA Hooks
+  const { showToast } = useToast();
+  const { isInstallable, promptInstall, dismissPrompt } = useInstallPrompt();
+  const { needRefresh, updateServiceWorker } = usePWAUpdate();
+  const { vibrate } = useHaptic();
+  const [showInstallPrompt, setShowInstallPrompt] = useState(false);
+  const [showUpdatePrompt, setShowUpdatePrompt] = useState(false);
 
-  // Persist API key
+  // Show install prompt after a delay (UX best practice)
   useEffect(() => {
-    localStorage.setItem('geminiApiKey', geminiApiKey);
-  }, [geminiApiKey]);
+    if (isInstallable && !localStorage.getItem('installPromptDismissed')) {
+      const timer = setTimeout(() => setShowInstallPrompt(true), 5000); // 5 seconds delay
+      return () => clearTimeout(timer);
+    }
+  }, [isInstallable]);
+
+  // Show update prompt when new version is available
+  useEffect(() => {
+    if (needRefresh) {
+      setShowUpdatePrompt(true);
+    }
+  }, [needRefresh]);
+
+
+  // Persist displayName
+  useEffect(() => { localStorage.setItem('displayName', displayName); }, [displayName]);
+  useEffect(() => { localStorage.setItem('geminiApiKey', geminiApiKey); }, [geminiApiKey]);
+  useEffect(() => { localStorage.setItem('cityState', cityState); }, [cityState]);
 
   // Handle email/password authentication
-  const handleLogin = async (email, password, isLogin) => {
+  const handleLogin = async (email: string, password: string, isLogin: boolean) => {
     try {
       const userCredential = isLogin
         ? await signInWithEmailAndPassword(auth, email, password)
@@ -1141,27 +1333,17 @@ const App = () => {
 
       setUserEmail(email);
       return userCredential;
-    } catch (error) {
-      console.error('Auth error:', error);
-      throw error;
+    } catch (error: unknown) {
+      console.error("Authentication error:", error);
+      vibrate('heavy');
+      const msg = error instanceof Error ? error.message : 'Authentication failed';
+      showToast(msg, 'error');
+      throw error; // Re-throw for AuthModal to handle
     }
   };
 
-  // 1. Authentication and Initialization + PWA Registration
+  // 1. Authentication and Initialization
   useEffect(() => {
-    // --- PWA Service Worker Registration ---
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/service-worker.js')
-          .then(registration => {
-            console.log('Service Worker registered with scope:', registration.scope);
-          })
-          .catch(error => {
-            console.error('Service Worker registration failed:', error);
-          });
-      });
-    }
-
     // --- Firebase Auth ---
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
@@ -1173,6 +1355,7 @@ const App = () => {
         setAuthReady(true);
         setShowAuthModal(true);
       }
+
     });
 
     return () => unsubscribe();
@@ -1180,13 +1363,19 @@ const App = () => {
 
   // --- Data Fetching (Local Storage Only) ---
   useEffect(() => {
-    const loadLocalSheets = () => {
+    const loadLocalSheets = async () => {
+      setIsLoadingData(true);
+      // Simulate network delay for skeleton demonstration
+      await new Promise(resolve => setTimeout(resolve, 800));
+
       try {
         const local = JSON.parse(localStorage.getItem('localSheets') || '[]');
         setSheets(local);
       } catch (e) {
         console.error("Failed to load local sheets", e);
         setSheets([]);
+      } finally {
+        setIsLoadingData(false);
       }
     };
     loadLocalSheets();
@@ -1197,38 +1386,45 @@ const App = () => {
 
   // --- CRUD Operations (Local Storage Only) ---
   const handleCreateSheet = () => {
-    const id = 'local_' + Date.now();
     const newSheet = {
-      id,
+      id: generateId(),
       street: '',
       terrNo: '',
-      publisherName: displayName,
+      publisherName: displayName || 'Unknown',
       rows: [],
       createdAt: { seconds: Date.now() / 1000 },
       updatedAt: { seconds: Date.now() / 1000 }
     };
-    const updatedSheets = [newSheet, ...sheets];
+    const updatedSheets = [...sheets, newSheet];
     setSheets(updatedSheets);
-    localStorage.setItem('localSheets', JSON.stringify(updatedSheets));
     setSelectedSheet(newSheet);
     setIsReadOnly(false);
+    localStorage.setItem('localSheets', JSON.stringify(updatedSheets));
+
+    // PWA Enhancements
+    vibrate('light');
+    showToast('New sheet created!', 'success');
   };
 
-  const handleDeleteSheet = (id) => {
+  const handleDeleteSheet = (id: string) => {
     const updatedSheets = sheets.filter(s => s.id !== id);
     setSheets(updatedSheets);
     localStorage.setItem('localSheets', JSON.stringify(updatedSheets));
     if (selectedSheet?.id === id) setSelectedSheet(null);
+
+    // PWA Enhancements
+    vibrate('medium');
+    showToast('Sheet deleted', 'info');
   };
 
-  const handleUpdateSheet = (id, data) => {
+  const handleUpdateSheet = (id: string, data: Sheet) => {
     const updatedSheets = sheets.map(s => s.id === id ? { ...s, ...data, updatedAt: { seconds: Date.now() / 1000 } } : s);
     setSheets(updatedSheets);
     localStorage.setItem('localSheets', JSON.stringify(updatedSheets));
   };
 
   // 4. Sharing Logic
-  const handleShareSheet = async (data) => {
+  const handleShareSheet = async (data: Sheet) => {
     if (!userId) return;
     const shareId = generateId(); // Use a unique, public ID for sharing
 
@@ -1256,13 +1452,13 @@ const App = () => {
   };
 
   // 5. Opening Shared Record Logic
-  const handleOpenSharedRecord = async (shareId) => {
+  const handleOpenSharedRecord = async (shareId: string) => {
     const docRef = doc(db, `artifacts/${appId}/public/data/sharedRecords`, shareId);
     try {
       const docSnap = await getDoc(docRef);
       if (docSnap.exists()) {
         // Shared record is read-only, load it into selectedSheet
-        setSelectedSheet({ ...docSnap.data(), id: shareId });
+        setSelectedSheet({ ...docSnap.data(), id: shareId } as Sheet);
         setIsReadOnly(true);
       } else {
         console.warn("Shared record not found.");
@@ -1304,34 +1500,42 @@ const App = () => {
       />
 
       {/* Main Content */}
-      {selectedSheet ? (
-        <SheetEditor
-          sheetData={selectedSheet}
-          onBack={() => { setSelectedSheet(null); setIsReadOnly(false); }}
-          onUpdate={handleUpdateSheet}
-          onShare={handleShareSheet}
-          isReadOnly={isReadOnly}
-        />
-      ) : (
-        <SheetList
-          sheets={sheets}
-          onSelect={(sheet) => { setSelectedSheet(sheet); setIsReadOnly(false); }}
-          onCreate={handleCreateSheet}
-          onDelete={handleDeleteSheet}
-          onOpenShared={() => setShowEnterCodeModal(true)}
-          userId={userId}
-          userEmail={userEmail}
-          onLogout={() => {
-            signOut(auth);
-            localStorage.clear();
-            window.location.reload();
-          }}
-          displayName={displayName}
-          setDisplayName={setDisplayName}
-          geminiApiKey={geminiApiKey}
-          setGeminiApiKey={setGeminiApiKey}
-        />
-      )}
+      <PullToRefresh onRefresh={async () => {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        window.location.reload();
+      }}>
+        {selectedSheet ? (
+          <SheetEditor
+            sheetData={selectedSheet}
+            onBack={() => { setSelectedSheet(null); setIsReadOnly(false); }}
+            onUpdate={handleUpdateSheet}
+            onShare={handleShareSheet}
+            isReadOnly={isReadOnly}
+          />
+        ) : (
+          <SheetList
+            sheets={sheets}
+            onSelect={(sheet) => { setSelectedSheet(sheet); setIsReadOnly(false); }}
+            onCreate={handleCreateSheet}
+            onDelete={handleDeleteSheet}
+            onOpenShared={() => setShowEnterCodeModal(true)}
+            userId={userId}
+            userEmail={userEmail}
+            onLogout={() => {
+              signOut(auth);
+              localStorage.clear();
+              window.location.reload();
+            }}
+            displayName={displayName}
+            setDisplayName={setDisplayName}
+            geminiApiKey={geminiApiKey}
+            setGeminiApiKey={setGeminiApiKey}
+            cityState={cityState}
+            setCityState={setCityState}
+            isLoading={isLoadingData}
+          />
+        )}
+      </PullToRefresh>
 
       {/* Auth Modal */}
       <AuthModal
@@ -1354,6 +1558,39 @@ const App = () => {
       <div className="fixed bottom-0 left-0 right-0 p-2 text-center text-xs bg-gray-100/80 backdrop-blur-sm border-t" style={{ color: MEDIUM_GRAY, borderColor: LIGHT_GRAY }}>
         App ID: {appId} | User ID: {userId || 'Authenticating...'}
       </div>
+
+      {/* PWA Components */}
+      <Toast />
+      <OfflineIndicator />
+
+      {/* Install Prompt */}
+      {showInstallPrompt && (
+        <InstallPrompt
+          onInstall={async () => {
+            vibrate('medium');
+            await promptInstall();
+            setShowInstallPrompt(false);
+            localStorage.setItem('installPromptDismissed', 'true');
+            showToast('App installed successfully!', 'success');
+          }}
+          onDismiss={() => {
+            dismissPrompt();
+            setShowInstallPrompt(false);
+            localStorage.setItem('installPromptDismissed', 'true');
+          }}
+        />
+      )}
+
+      {/* Update Notification */}
+      {showUpdatePrompt && (
+        <UpdateNotification
+          onUpdate={() => {
+            vibrate('medium');
+            updateServiceWorker();
+          }}
+          onDismiss={() => setShowUpdatePrompt(false)}
+        />
+      )}
     </div>
   );
 };

@@ -44,15 +44,15 @@ interface BeforeInstallPromptEvent extends Event {
 export function useInstallPrompt() {
     const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
     const [isInstallable, setIsInstallable] = useState(false);
-    const [isInstalled, setIsInstalled] = useState(false);
+    const [isInstalled, setIsInstalled] = useState(() => {
+        // Check if already installed
+        if (typeof window !== 'undefined') {
+            return window.matchMedia('(display-mode: standalone)').matches;
+        }
+        return false;
+    });
 
     useEffect(() => {
-        // Check if already installed
-        if (window.matchMedia('(display-mode: standalone)').matches) {
-            setIsInstalled(true);
-            return;
-        }
-
         const handleBeforeInstallPrompt = (e: Event) => {
             e.preventDefault();
             setDeferredPrompt(e as BeforeInstallPromptEvent);
@@ -88,7 +88,8 @@ export function useInstallPrompt() {
 
     const dismissPrompt = () => {
         setIsInstallable(false);
-        setDeferredPrompt(null);
+        // We keep the deferredPrompt so we can potentially show a button later if we wanted to
+        // But for this UI, we just hide the prompt.
     };
 
     return {
